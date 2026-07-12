@@ -2,10 +2,12 @@ const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 
+console.log("SERVER VERSION: CAMERA_FORWARD_FIX_V4");
+
 const app = express();
 
 app.get("/", (req, res) => {
-    res.send("Parental Control WebSocket Server Running");
+  res.send("Parental Control WebSocket Server Running");
 });
 
 const server = http.createServer(app);
@@ -13,75 +15,176 @@ const wss = new WebSocket.Server({ server });
 
 const families = new Map();
 
+function getRoom(familyId) {
+  if (!families.has(familyId)) {
+    families.set(familyId, {
+      child: null,
+      parent: null,
+
+      cameraChild: null,
+      cameraParent: null,
+
+      lastCameraOffer: null,
+    });
+  }
+
+  return families.get(familyId);
+}
+
+function safeSend(target, message, label) {
+  if (target && target.readyState === WebSocket.OPEN) {
+    console.log(label);
+    target.send(message.toString());
+    return true;
+  }
+
+  console.log(label + " FAILED - target not connected");
+  return false;
+}
+
 wss.on("connection", (ws, req) => {
-    const url = new URL(req.url, "http://localhost");
+  const url = new URL(req.url, `http://${req.headers.host}`);
 
-    const role = url.searchParams.get("role");
-    const familyId = url.searchParams.get("familyId");
+  const role = url.searchParams.get("role");
+  const familyId = url.searchParams.get("familyId");
 
-    console.log(`${role} connected : ${familyId}`);
+  console.log(`${role} connected : ${familyId}`);
 
-    if (!families.has(familyId)) {
-        families.set(familyId, {
-            child: null,
-            parent: null,
-        });
+  if (!role || !familyId) {
+    console.log("Socket closed: missing role or familyId");
+    ws.close();
+    return;
+  }
+
+  const room = getRoom(familyId);
+
+  if (role === "child") {
+    room.child = ws;
+  } else if (role === "parent") {
+    room.parent = ws;
+  } else if (role === "camera_child") {
+    room.cameraChild = ws;
+  } else if (role === "camera_parent") {
+    room.cameraParent = ws;
+
+    if (room.lastCameraOffer) {
+      console.log("Sending saved camera offer to parent");
+      ws.send(room.lastCameraOffer);
     }
+  } else {
+    console.log("Unknown role:", role);
+    ws.close();
+    return;
+  }
 
-    const room = families.get(familyId);
+  ws.on("message", (message) => {
+    const text = message.toString();
 
+    console.log(
+      "message from",
+      role,
+      "family:",
+      familyId,
+      "bytes:",
+      text.length
+    );
+
+    console.log("ROOM STATE:", {
+      child: !!room.child,
+      parent: !!room.parent,
+      cameraChild: !!room.cameraChild,
+      cameraParent: !!room.cameraParent,
+      cameraParentOpen:
+        room.cameraParent &&
+        room.cameraParent.readyState === WebSocket.OPEN,
+      cameraChildOpen:
+        room.cameraChild &&
+        room.cameraChild.readyState === WebSocket.OPEN,
+    });
+
+    // AUDIO child -> parent
     if (role === "child") {
-        room.child = ws;
+      safeSend(room.parent, message, "FORWARD AUDIO child -> parent");
+      return;
     }
 
+    // AUDIO parent -> child
     if (role === "parent") {
-        room.parent = ws;
+      safeSend(room.child, message, "FORWARD AUDIO parent -> child");
+      return;
     }
 
-    ws.on("message", (message) => {
-        console.log(
-            "message from",
-            role,
-            "family:",
-            familyId,
-            "bytes:",
-            message.length
-        );
+    // CAMERA child -> parent
+    if (role === "camera_child") {
+      try {
+        const data = JSON.parse(text);
 
-        if (role === "child") {
-            if (room.parent && room.parent.readyState === WebSocket.OPEN) {
-                console.log("forwarding child -> parent");
-                room.parent.send(message);
-            } else {
-                console.log("parent not connected");
-            }
+        if (data.type === "offer") {
+          room.lastCameraOffer = text;
+          console.log("Saved latest camera offer");
         }
+      } catch (e) {
+        console.log("Camera child message is not valid JSON");
+      }
 
-        if (role === "parent") {
-            if (room.child && room.child.readyState === WebSocket.OPEN) {
-                console.log("forwarding parent -> child");
-                room.child.send(message);
-            } else {
-                console.log("child not connected");
-            }
-        }
-    });
+      safeSend(
+        room.cameraParent,
+        message,
+        "FORWARD CAMERA child -> parent"
+      );
+      return;
+    }
 
-    ws.on("close", () => {
-        console.log(role + " disconnected");
+    // CAMERA parent -> child
+    if (role === "camera_parent") {
+      safeSend(
+        room.cameraChild,
+        message,
+        "FORWARD CAMERA parent -> child"
+      );
+      return;
+    }
+  });
 
-        if (role === "child") {
-            room.child = null;
-        }
+  ws.on("close", () => {
+    console.log(`${role} disconnected : ${familyId}`);
 
-        if (role === "parent") {
-            room.parent = null;
-        }
-    });
+    if (room.child === ws) {
+      room.child = null;
+    }
+
+    if (room.parent === ws) {
+      room.parent = null;
+    }
+
+    if (room.cameraChild === ws) {
+      room.cameraChild = null;
+    }
+
+    if (room.cameraParent === ws) {
+      room.cameraParent = null;
+    }
+  });
+
+  ws.on("error", (error) => {
+    console.log(`${role} socket error:`, error.message);
+  });
+});
+
+const interval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.ping();
+    }
+  });
+}, 30000);
+
+wss.on("close", () => {
+  clearInterval(interval);
 });
 
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
-    console.log("Server Running on " + PORT);
+  console.log("Server Running on " + PORT);
 });
