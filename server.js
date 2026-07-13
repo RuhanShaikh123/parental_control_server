@@ -2,7 +2,7 @@ const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 
-console.log("SERVER VERSION: CAMERA_FORWARD_FIX_V5_NO_CACHE");
+console.log("SERVER VERSION: AUDIO_BINARY_CAMERA_TEXT_V6");
 
 const app = express();
 
@@ -28,10 +28,21 @@ function getRoom(familyId) {
   return families.get(familyId);
 }
 
-function safeSend(target, message, label) {
+function safeSendBinary(target, message, label) {
   if (target && target.readyState === WebSocket.OPEN) {
     console.log(label);
-    target.send(message.toString());
+    target.send(message); // audio must stay binary
+    return true;
+  }
+
+  console.log(label + " FAILED - target not connected");
+  return false;
+}
+
+function safeSendText(target, message, label) {
+  if (target && target.readyState === WebSocket.OPEN) {
+    console.log(label);
+    target.send(message.toString()); // camera signaling is JSON text
     return true;
   }
 
@@ -70,15 +81,13 @@ wss.on("connection", (ws, req) => {
   }
 
   ws.on("message", (message) => {
-    const text = message.toString();
-
     console.log(
       "message from",
       role,
       "family:",
       familyId,
       "bytes:",
-      text.length
+      message.length
     );
 
     console.log("ROOM STATE:", {
@@ -86,6 +95,12 @@ wss.on("connection", (ws, req) => {
       parent: !!room.parent,
       cameraChild: !!room.cameraChild,
       cameraParent: !!room.cameraParent,
+      parentOpen:
+        room.parent &&
+        room.parent.readyState === WebSocket.OPEN,
+      childOpen:
+        room.child &&
+        room.child.readyState === WebSocket.OPEN,
       cameraParentOpen:
         room.cameraParent &&
         room.cameraParent.readyState === WebSocket.OPEN,
@@ -95,17 +110,25 @@ wss.on("connection", (ws, req) => {
     });
 
     if (role === "child") {
-      safeSend(room.parent, message, "FORWARD AUDIO child -> parent");
+      safeSendBinary(
+        room.parent,
+        message,
+        "FORWARD AUDIO child -> parent"
+      );
       return;
     }
 
     if (role === "parent") {
-      safeSend(room.child, message, "FORWARD AUDIO parent -> child");
+      safeSendBinary(
+        room.child,
+        message,
+        "FORWARD AUDIO parent -> child"
+      );
       return;
     }
 
     if (role === "camera_child") {
-      safeSend(
+      safeSendText(
         room.cameraParent,
         message,
         "FORWARD CAMERA child -> parent"
@@ -114,7 +137,7 @@ wss.on("connection", (ws, req) => {
     }
 
     if (role === "camera_parent") {
-      safeSend(
+      safeSendText(
         room.cameraChild,
         message,
         "FORWARD CAMERA parent -> child"
