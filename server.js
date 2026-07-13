@@ -2,7 +2,7 @@ const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
 
-console.log("SERVER VERSION: CAMERA_FORWARD_FIX_V4");
+console.log("SERVER VERSION: CAMERA_FORWARD_FIX_V5_NO_CACHE");
 
 const app = express();
 
@@ -20,11 +20,8 @@ function getRoom(familyId) {
     families.set(familyId, {
       child: null,
       parent: null,
-
       cameraChild: null,
       cameraParent: null,
-
-      lastCameraOffer: null,
     });
   }
 
@@ -66,11 +63,6 @@ wss.on("connection", (ws, req) => {
     room.cameraChild = ws;
   } else if (role === "camera_parent") {
     room.cameraParent = ws;
-
-    if (room.lastCameraOffer) {
-      console.log("Sending saved camera offer to parent");
-      ws.send(room.lastCameraOffer);
-    }
   } else {
     console.log("Unknown role:", role);
     ws.close();
@@ -102,31 +94,17 @@ wss.on("connection", (ws, req) => {
         room.cameraChild.readyState === WebSocket.OPEN,
     });
 
-    // AUDIO child -> parent
     if (role === "child") {
       safeSend(room.parent, message, "FORWARD AUDIO child -> parent");
       return;
     }
 
-    // AUDIO parent -> child
     if (role === "parent") {
       safeSend(room.child, message, "FORWARD AUDIO parent -> child");
       return;
     }
 
-    // CAMERA child -> parent
     if (role === "camera_child") {
-      try {
-        const data = JSON.parse(text);
-
-        if (data.type === "offer") {
-          room.lastCameraOffer = text;
-          console.log("Saved latest camera offer");
-        }
-      } catch (e) {
-        console.log("Camera child message is not valid JSON");
-      }
-
       safeSend(
         room.cameraParent,
         message,
@@ -135,7 +113,6 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
-    // CAMERA parent -> child
     if (role === "camera_parent") {
       safeSend(
         room.cameraChild,
