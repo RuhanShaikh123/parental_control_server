@@ -340,21 +340,49 @@ wss.on("connection", (ws, req) => {
         return;
       }
 
-      if (role === "screen_parent") {
-        if (isBinary) {
-          console.log(
-            "Unexpected screen parent binary message"
-          );
+     if (role === "screen_parent") {
+  if (isBinary) {
+    console.log(
+      "Unexpected screen parent binary message"
+    );
 
-          return;
-        }
+    return;
+  }
 
-        sendText(
-          room.screenChild,
-          message,
-          "FORWARD SCREEN SIGNAL parent -> child"
-        );
-      }
+  const text = message.toString();
+
+  try {
+    const json = JSON.parse(text);
+
+    /*
+     * The server already sends viewer_ready when
+     * screen_parent connects. Ignore duplicate
+     * requests from older parent app versions.
+     */
+    if (json.type === "viewer_ready") {
+      console.log(
+        "IGNORED DUPLICATE SCREEN VIEWER READY"
+      );
+
+      return;
+    }
+  } catch (error) {
+    console.log(
+      "Invalid screen parent JSON:",
+      error.message
+    );
+
+    return;
+  }
+
+  sendText(
+    room.screenChild,
+    text,
+    "FORWARD SCREEN SIGNAL parent -> child"
+  );
+
+  return;
+}
     }
   );
 
