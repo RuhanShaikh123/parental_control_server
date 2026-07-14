@@ -3,7 +3,7 @@ const http = require("http");
 const WebSocket = require("ws");
 
 console.log(
-  "SERVER VERSION: AUDIO_CAMERA_SCREEN_V7"
+  "SERVER VERSION: AUDIO_CAMERA_SCREEN_WEBRTC_V8"
 );
 
 const app = express();
@@ -25,15 +25,15 @@ const families = new Map();
 function getRoom(familyId) {
   if (!families.has(familyId)) {
     families.set(familyId, {
-      // Existing microphone connections
+      // Existing microphone
       child: null,
       parent: null,
 
-      // Existing camera connections
+      // Existing camera WebRTC
       cameraChild: null,
       cameraParent: null,
 
-      // New screen connections
+      // New screen WebRTC
       screenChild: null,
       screenParent: null,
     });
@@ -42,20 +42,24 @@ function getRoom(familyId) {
   return families.get(familyId);
 }
 
-function isSocketOpen(socket) {
+function isOpen(socket) {
   return (
     socket &&
     socket.readyState === WebSocket.OPEN
   );
 }
 
-function replaceSocket(room, key, newSocket) {
-  const oldSocket = room[key];
+function replaceSocket(
+  room,
+  field,
+  newSocket
+) {
+  const oldSocket = room[field];
 
   if (
     oldSocket &&
     oldSocket !== newSocket &&
-    isSocketOpen(oldSocket)
+    isOpen(oldSocket)
   ) {
     oldSocket.close(
       4000,
@@ -63,69 +67,71 @@ function replaceSocket(room, key, newSocket) {
     );
   }
 
-  room[key] = newSocket;
+  room[field] = newSocket;
 }
 
-function safeSendBinary(
+function sendBinary(
   target,
   message,
-  label,
-  showLog = true
+  label
 ) {
-  if (isSocketOpen(target)) {
-    if (showLog) {
-      console.log(label);
-    }
-
-    target.send(message, {
-      binary: true,
-    });
-
-    return true;
-  }
-
-  if (showLog) {
+  if (!isOpen(target)) {
     console.log(
       label +
         " FAILED - target not connected"
     );
+
+    return false;
   }
 
-  return false;
+  target.send(message, {
+    binary: true,
+  });
+
+  console.log(label);
+
+  return true;
 }
 
-function safeSendText(
+function sendText(
   target,
   message,
-  label,
-  showLog = true
+  label
 ) {
-  if (isSocketOpen(target)) {
-    if (showLog) {
-      console.log(label);
-    }
-
-    target.send(
-      message.toString(),
-      {
-        binary: false,
-      }
-    );
-
-    return true;
-  }
-
-  if (showLog) {
+  if (!isOpen(target)) {
     console.log(
       label +
         " FAILED - target not connected"
     );
+
+    return false;
   }
 
-  return false;
+  target.send(
+    message.toString(),
+    {
+      binary: false,
+    }
+  );
+
+  console.log(label);
+
+  return true;
 }
 
-function isRoomEmpty(room) {
+function sendJson(
+  target,
+  object,
+  label
+) {
+  return sendText(
+    target,
+    JSON.stringify(object),
+    label
+  );
+}
+
+function roomIsEmpty(room) {
   return (
     !room.child &&
     !room.parent &&
@@ -148,13 +154,9 @@ wss.on("connection", (ws, req) => {
   const familyId =
     url.searchParams.get("familyId");
 
-  console.log(
-    `${role} connected : ${familyId}`
-  );
-
   if (!role || !familyId) {
     console.log(
-      "Socket closed: missing role or familyId"
+      "Connection rejected: missing role or familyId"
     );
 
     ws.close(
@@ -165,11 +167,12 @@ wss.on("connection", (ws, req) => {
     return;
   }
 
+  console.log(
+    `${role} connected : ${familyId}`
+  );
+
   const room = getRoom(familyId);
 
-  /*
-   * Register socket based on role.
-   */
   if (role === "child") {
     replaceSocket(
       room,
@@ -201,20 +204,20 @@ wss.on("connection", (ws, req) => {
       ws
     );
 
-    /*
-     * If parent screen page is already open,
-     * tell child to begin sending frames.
-     */
-    if (isSocketOpen(room.screenParent)) {
-      safeSendText(
+    if (isOpen(room.screenParent)) {
+      sendJson(
         room.screenChild,
-        "viewer_ready",
+        {
+          type: "viewer_ready",
+        },
         "SCREEN VIEWER READY"
       );
 
-      safeSendText(
+      sendJson(
         room.screenParent,
-        "child_screen_ready",
+        {
+          type: "child_ready",
+        },
         "SCREEN CHILD READY"
       );
     }
@@ -225,21 +228,29 @@ wss.on("connection", (ws, req) => {
       ws
     );
 
-    /*
-     * If child capture service is connected,
-     * tell it that a viewer is ready.
-     */
-    if (isSocketOpen(room.screenChild)) {
-      safeSendText(
+    if (isOpen(room.screenChild)) {
+      sendJson(
         room.screenChild,
-        "viewer_ready",
+        {
+          type: "viewer_ready",
+        },
         "SCREEN VIEWER READY"
       );
 
-      safeSendText(
+      sendJson(
         room.screenParent,
-        "child_screen_ready",
+        {
+          type: "child_ready",
+        },
         "SCREEN CHILD READY"
+      );
+    } else {
+      sendJson(
+        room.screenParent,
+        {
+          type: "child_disconnected",
+        },
+        "SCREEN CHILD OFFLINE"
       );
     }
   } else {
@@ -260,32 +271,10 @@ wss.on("connection", (ws, req) => {
     "message",
     (message, isBinary) => {
       /*
-       * Do not print every screen-frame size.
-       * Screen frames arrive several times per
-       * second and would fill Render logs.
-       */
-      if (
-        role !== "screen_child" ||
-        !isBinary
-      ) {
-        console.log(
-          "Message from",
-          role,
-          "family:",
-          familyId,
-          "bytes:",
-          message.length,
-          "binary:",
-          isBinary
-        );
-      }
-
-      /*
-       * Existing microphone:
-       * child -> parent
+       * Existing microphone audio.
        */
       if (role === "child") {
-        safeSendBinary(
+        sendBinary(
           room.parent,
           message,
           "FORWARD AUDIO child -> parent"
@@ -294,12 +283,8 @@ wss.on("connection", (ws, req) => {
         return;
       }
 
-      /*
-       * Existing microphone:
-       * parent -> child
-       */
       if (role === "parent") {
-        safeSendBinary(
+        sendBinary(
           room.child,
           message,
           "FORWARD AUDIO parent -> child"
@@ -309,11 +294,10 @@ wss.on("connection", (ws, req) => {
       }
 
       /*
-       * Existing camera signaling:
-       * camera child -> camera parent
+       * Existing camera WebRTC signaling.
        */
       if (role === "camera_child") {
-        safeSendText(
+        sendText(
           room.cameraParent,
           message,
           "FORWARD CAMERA child -> parent"
@@ -322,12 +306,8 @@ wss.on("connection", (ws, req) => {
         return;
       }
 
-      /*
-       * Existing camera signaling:
-       * camera parent -> camera child
-       */
       if (role === "camera_parent") {
-        safeSendText(
+        sendText(
           room.cameraChild,
           message,
           "FORWARD CAMERA parent -> child"
@@ -337,139 +317,108 @@ wss.on("connection", (ws, req) => {
       }
 
       /*
-       * New screen streaming:
-       * child sends binary JPEG frames.
+       * New screen WebRTC signaling.
+       *
+       * No screen video bytes pass through Render.
+       * Only JSON offer/answer/ICE messages pass here.
        */
       if (role === "screen_child") {
         if (isBinary) {
-          safeSendBinary(
-            room.screenParent,
-            message,
-            "FORWARD SCREEN child -> parent",
-            false
+          console.log(
+            "Old JPEG screen frame ignored"
           );
 
           return;
         }
 
-        const text =
-          message.toString();
-
-        console.log(
-          "Screen child message:",
-          text
+        sendText(
+          room.screenParent,
+          message,
+          "FORWARD SCREEN SIGNAL child -> parent"
         );
-
-        if (
-          text === "screen_child_ready"
-        ) {
-          if (
-            isSocketOpen(
-              room.screenParent
-            )
-          ) {
-            safeSendText(
-              room.screenChild,
-              "viewer_ready",
-              "SCREEN VIEWER READY"
-            );
-
-            safeSendText(
-              room.screenParent,
-              "child_screen_ready",
-              "SCREEN CHILD READY"
-            );
-          }
-        }
 
         return;
       }
 
-      /*
-       * Optional parent screen messages.
-       */
       if (role === "screen_parent") {
-        const text =
-          message.toString();
-
-        console.log(
-          "Screen parent message:",
-          text
-        );
-
-        if (text === "viewer_ready") {
-          safeSendText(
-            room.screenChild,
-            "viewer_ready",
-            "SCREEN VIEWER READY"
+        if (isBinary) {
+          console.log(
+            "Unexpected screen parent binary message"
           );
+
+          return;
         }
+
+        sendText(
+          room.screenChild,
+          message,
+          "FORWARD SCREEN SIGNAL parent -> child"
+        );
       }
     }
   );
 
-  ws.on("close", (code, reason) => {
-    console.log(
-      `${role} disconnected : ${familyId}`,
-      "code:",
-      code,
-      "reason:",
-      reason.toString()
-    );
-
-    if (room.child === ws) {
-      room.child = null;
-    }
-
-    if (room.parent === ws) {
-      room.parent = null;
-    }
-
-    if (room.cameraChild === ws) {
-      room.cameraChild = null;
-    }
-
-    if (room.cameraParent === ws) {
-      room.cameraParent = null;
-    }
-
-    if (room.screenParent === ws) {
-      room.screenParent = null;
-
-      /*
-       * Parent closed Live Screen page.
-       * Child stops producing JPEG frames but
-       * MediaProjection service remains active.
-       */
-      safeSendText(
-        room.screenChild,
-        "viewer_left",
-        "SCREEN VIEWER LEFT"
-      );
-    }
-
-    if (room.screenChild === ws) {
-      room.screenChild = null;
-
-      /*
-       * Child capture service disconnected.
-       */
-      safeSendText(
-        room.screenParent,
-        "child_screen_disconnected",
-        "SCREEN CHILD DISCONNECTED"
-      );
-    }
-
-    if (isRoomEmpty(room)) {
-      families.delete(familyId);
-
+  ws.on(
+    "close",
+    (code, reason) => {
       console.log(
-        "Room removed:",
-        familyId
+        `${role} disconnected : ${familyId}`,
+        "code:",
+        code,
+        "reason:",
+        reason.toString()
       );
+
+      if (room.child === ws) {
+        room.child = null;
+      }
+
+      if (room.parent === ws) {
+        room.parent = null;
+      }
+
+      if (room.cameraChild === ws) {
+        room.cameraChild = null;
+      }
+
+      if (room.cameraParent === ws) {
+        room.cameraParent = null;
+      }
+
+      if (room.screenParent === ws) {
+        room.screenParent = null;
+
+        sendJson(
+          room.screenChild,
+          {
+            type: "viewer_left",
+          },
+          "SCREEN VIEWER LEFT"
+        );
+      }
+
+      if (room.screenChild === ws) {
+        room.screenChild = null;
+
+        sendJson(
+          room.screenParent,
+          {
+            type: "child_disconnected",
+          },
+          "SCREEN CHILD DISCONNECTED"
+        );
+      }
+
+      if (roomIsEmpty(room)) {
+        families.delete(familyId);
+
+        console.log(
+          "Room removed:",
+          familyId
+        );
+      }
     }
-  });
+  );
 
   ws.on("error", (error) => {
     console.log(
@@ -479,21 +428,19 @@ wss.on("connection", (ws, req) => {
   });
 });
 
-/*
- * Keeps Render and connected sockets alive.
- */
-const interval = setInterval(() => {
-  wss.clients.forEach((ws) => {
-    if (
-      ws.readyState === WebSocket.OPEN
-    ) {
-      ws.ping();
-    }
-  });
-}, 30000);
+const heartbeatInterval =
+  setInterval(() => {
+    wss.clients.forEach((ws) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.ping();
+      }
+    });
+  }, 30000);
 
 wss.on("close", () => {
-  clearInterval(interval);
+  clearInterval(
+    heartbeatInterval
+  );
 });
 
 const PORT =
