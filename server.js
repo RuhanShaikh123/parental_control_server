@@ -6,6 +6,10 @@ console.log(
   "SERVER VERSION: AUDIO_CAMERA_SCREEN_WEBRTC_V8"
 );
 
+console.log(
+  "SERVER VERSION: AUDIO_CAMERA_SCREEN_WEBRTC_V9"
+);
+
 const app = express();
 
 app.get("/", (req, res) => {
