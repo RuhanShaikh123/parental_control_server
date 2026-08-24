@@ -198,6 +198,41 @@ async function getParentUid(familyId) {
   }
 }
 
+async function notifyChildOnline(familyId) {
+  try {
+    const parentUid = await getParentUid(familyId);
+
+    if (!parentUid) {
+      console.log(
+        "Cannot send Child Online notification: parent UID not found"
+      );
+      return;
+    }
+
+    await sendNotification(
+      parentUid,
+      "Child Online",
+      "Your child's device is now online.",
+      {
+        type: "child_online",
+        familyId: familyId,
+      }
+    );
+
+    console.log(
+      "Child Online notification processed:",
+      familyId
+    );
+  } catch (error) {
+    console.error(
+      "CHILD ONLINE NOTIFICATION ERROR:",
+      error
+    );
+  }
+}
+
+
+
 wss.on("connection", (ws, req) => {
   const url = new URL(
     req.url,
