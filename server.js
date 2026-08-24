@@ -242,6 +242,11 @@ wss.on("connection", (ws, req) => {
   const role =
     url.searchParams.get("role");
 
+    console.log(
+  "WEBSOCKET CONNECTION ATTEMPT:",
+  req.url
+);
+
   const familyId =
     url.searchParams.get("familyId");
 
