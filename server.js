@@ -1,6 +1,33 @@
 const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
+const path = require("path");
+
+const { initializeApp, cert } =
+  require("firebase-admin/app");
+
+  const { getFirestore } =
+  require("firebase-admin/firestore");
+
+const { getMessaging } =
+  require("firebase-admin/messaging");
+
+const serviceAccountPath =
+  process.env.NODE_ENV === "production"
+    ? "/etc/secrets/firebase-service-account.json"
+    : path.join(
+        __dirname,
+        "firebase-service-account.json"
+      );
+
+const serviceAccount =
+  require(serviceAccountPath);
+
+initializeApp({
+  credential: cert(serviceAccount),
+});
+
+const db = getFirestore();
 
 console.log(
   "SERVER VERSION: AUDIO_CAMERA_SCREEN_WEBRTC_V8"
@@ -146,6 +173,31 @@ function roomIsEmpty(room) {
   );
 }
 
+
+
+async function getParentUid(familyId) {
+  try {
+    const familyDoc = await db
+      .collection("families")
+      .doc(familyId)
+      .get();
+
+    if (!familyDoc.exists) {
+      console.log("Family not found:", familyId);
+      return null;
+    }
+
+    const data = familyDoc.data();
+
+    console.log("Family data:", data);
+
+    return data.parentUid || null;
+  } catch (error) {
+    console.error("GET PARENT UID ERROR:", error);
+    return null;
+  }
+}
+
 wss.on("connection", (ws, req) => {
   const url = new URL(
     req.url,
@@ -177,13 +229,17 @@ wss.on("connection", (ws, req) => {
 
   const room = getRoom(familyId);
 
-  if (role === "child") {
-    replaceSocket(
-      room,
-      "child",
-      ws
-    );
-  } else if (role === "parent") {
+if (role === "child") {
+  replaceSocket(
+    room,
+    "child",
+    ws
+  );
+
+  notifyChildOnline(familyId);
+}
+
+else if (role === "parent") {
     replaceSocket(
       room,
       "parent",
@@ -392,7 +448,7 @@ wss.on("connection", (ws, req) => {
 
   ws.on(
     "close",
-    (code, reason) => {
+   async (code, reason) => {
       console.log(
         `${role} disconnected : ${familyId}`,
         "code:",
@@ -401,9 +457,24 @@ wss.on("connection", (ws, req) => {
         reason.toString()
       );
 
-      if (room.child === ws) {
-        room.child = null;
+    if (room.child === ws) {
+  room.child = null;
+
+  const parentUid =
+    await getParentUid(familyId);
+
+  if (parentUid) {
+    await sendNotification(
+      parentUid,
+      "Child Offline",
+      "Your child's device has gone offline.",
+      {
+        type: "child_offline",
+        familyId: familyId,
       }
+    );
+  }
+}
 
       if (room.parent === ws) {
         room.parent = null;
@@ -482,4 +553,150 @@ server.listen(PORT, () => {
   console.log(
     "Server Running on " + PORT
   );
+});
+
+
+async function sendNotification(
+  parentUid,
+  title,
+  body,
+  data = {}
+) {
+  try {
+    const userDoc = await db
+      .collection("users")
+      .doc(parentUid)
+      .get();
+
+    if (!userDoc.exists) {
+      console.log(
+        "User not found:",
+        parentUid
+      );
+
+      return false;
+    }
+
+    const userData = userDoc.data();
+
+    const token = userData.fcmToken;
+
+    if (!token) {
+      console.log(
+        "FCM token not found:",
+        parentUid
+      );
+
+      return false;
+    }
+
+    const message = {
+      token: token,
+
+      notification: {
+        title: title,
+        body: body,
+      },
+
+      data: data,
+    };
+
+    const response =
+      await getMessaging().send(message);
+
+    console.log(
+      "Notification sent:",
+      response
+    );
+
+    return true;
+  } catch (error) {
+    console.error(
+      "Notification error:",
+      error
+    );
+
+    return false;
+  }
+}
+
+app.get(
+  "/test-parent-notification",
+  async (req, res) => {
+    const parentUid =
+      req.query.parentUid;
+
+    if (!parentUid) {
+      return res
+        .status(400)
+        .send("parentUid is required");
+    }
+
+    const success =
+      await sendNotification(
+        parentUid,
+        "Parent Controller",
+        "Firestore FCM test is working!",
+        {
+          type: "test",
+        }
+      );
+
+    if (success) {
+      return res.send(
+        "Notification sent successfully"
+      );
+    }
+
+    return res
+      .status(500)
+      .send(
+        "Notification could not be sent"
+      );
+  }
+);
+
+
+
+  app.get("/test-notification", async (req, res) => {
+  try {
+    const token = req.query.token;
+
+    if (!token) {
+      return res.status(400).send("FCM token is required");
+    }
+
+    const message = {
+      token: token,
+
+      notification: {
+        title: "Parent Controller",
+        body: "FCM test notification working!",
+      },
+
+      data: {
+        type: "test",
+      },
+    };
+
+    const response =
+      await getMessaging().send(message);
+
+    console.log(
+      "FCM notification sent:",
+      response
+    );
+
+    res.send("Notification sent successfully");
+  } catch (error) {
+    console.error(
+      "FCM notification failed:",
+      error
+    );
+
+    res.status(500).send(
+      "Notification failed: " +
+      error.message
+    );
+  }
 });
