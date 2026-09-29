@@ -6,7 +6,7 @@ const path = require("path");
 const { initializeApp, cert } =
   require("firebase-admin/app");
 
-  const { getFirestore } =
+const { getFirestore } =
   require("firebase-admin/firestore");
 
 const { getMessaging } =
@@ -37,6 +37,10 @@ console.log(
   "SERVER VERSION: AUDIO_CAMERA_SCREEN_WEBRTC_V9"
 );
 
+console.log(
+  "SERVER VERSION: ACCESSIBILITY_SCREENSHOT_FALLBACK_V1"
+);
+
 const app = express();
 
 app.get("/", (req, res) => {
@@ -64,9 +68,12 @@ function getRoom(familyId) {
       cameraChild: null,
       cameraParent: null,
 
-      // New screen WebRTC
+      // Existing screen WebRTC
       screenChild: null,
       screenParent: null,
+
+      // Accessibility screenshot fallback
+      screenshotChild: null,
     });
   }
 
@@ -169,11 +176,10 @@ function roomIsEmpty(room) {
     !room.cameraChild &&
     !room.cameraParent &&
     !room.screenChild &&
-    !room.screenParent
+    !room.screenParent &&
+    !room.screenshotChild
   );
 }
-
-
 
 async function getParentUid(familyId) {
   try {
@@ -183,29 +189,42 @@ async function getParentUid(familyId) {
       .get();
 
     if (!familyDoc.exists) {
-      console.log("Family not found:", familyId);
+      console.log(
+        "Family not found:",
+        familyId
+      );
+
       return null;
     }
 
     const data = familyDoc.data();
 
-    console.log("Family data:", data);
+    console.log(
+      "Family data:",
+      data
+    );
 
     return data.parentUid || null;
   } catch (error) {
-    console.error("GET PARENT UID ERROR:", error);
+    console.error(
+      "GET PARENT UID ERROR:",
+      error
+    );
+
     return null;
   }
 }
 
 async function notifyChildOnline(familyId) {
   try {
-    const parentUid = await getParentUid(familyId);
+    const parentUid =
+      await getParentUid(familyId);
 
     if (!parentUid) {
       console.log(
         "Cannot send Child Online notification: parent UID not found"
       );
+
       return;
     }
 
@@ -231,8 +250,6 @@ async function notifyChildOnline(familyId) {
   }
 }
 
-
-
 wss.on("connection", (ws, req) => {
   const url = new URL(
     req.url,
@@ -242,10 +259,10 @@ wss.on("connection", (ws, req) => {
   const role =
     url.searchParams.get("role");
 
-    console.log(
-  "WEBSOCKET CONNECTION ATTEMPT:",
-  req.url
-);
+  console.log(
+    "WEBSOCKET CONNECTION ATTEMPT:",
+    req.url
+  );
 
   const familyId =
     url.searchParams.get("familyId");
@@ -269,35 +286,56 @@ wss.on("connection", (ws, req) => {
 
   const room = getRoom(familyId);
 
-if (role === "child") {
-  replaceSocket(
-    room,
-    "child",
-    ws
-  );
+  /*
+   * Existing microphone child connection.
+   */
+  if (role === "child") {
+    replaceSocket(
+      room,
+      "child",
+      ws
+    );
 
-  notifyChildOnline(familyId);
-}
+    notifyChildOnline(familyId);
+  }
 
-else if (role === "parent") {
+  /*
+   * Existing microphone parent connection.
+   */
+  else if (role === "parent") {
     replaceSocket(
       room,
       "parent",
       ws
     );
-  } else if (role === "camera_child") {
+  }
+
+  /*
+   * Existing camera child connection.
+   */
+  else if (role === "camera_child") {
     replaceSocket(
       room,
       "cameraChild",
       ws
     );
-  } else if (role === "camera_parent") {
+  }
+
+  /*
+   * Existing camera parent connection.
+   */
+  else if (role === "camera_parent") {
     replaceSocket(
       room,
       "cameraParent",
       ws
     );
-  } else if (role === "screen_child") {
+  }
+
+  /*
+   * Existing screen WebRTC child connection.
+   */
+  else if (role === "screen_child") {
     replaceSocket(
       room,
       "screenChild",
@@ -321,7 +359,12 @@ else if (role === "parent") {
         "SCREEN CHILD READY"
       );
     }
-  } else if (role === "screen_parent") {
+  }
+
+  /*
+   * Existing screen WebRTC parent connection.
+   */
+  else if (role === "screen_parent") {
     replaceSocket(
       room,
       "screenParent",
@@ -353,7 +396,62 @@ else if (role === "parent") {
         "SCREEN CHILD OFFLINE"
       );
     }
-  } else {
+
+    /*
+     * If the Accessibility screenshot
+     * service is already connected, tell
+     * the parent that fallback is available.
+     */
+    if (isOpen(room.screenshotChild)) {
+      sendJson(
+        room.screenParent,
+        {
+          type: "screenshot_ready",
+        },
+        "SCREENSHOT FALLBACK READY"
+      );
+    }
+  }
+
+  /*
+   * NEW:
+   *
+   * Accessibility screenshot child connection.
+   *
+   * This connection sends JPEG binary
+   * screenshots from the child device.
+   */
+  else if (role === "screenshot_child") {
+    replaceSocket(
+      room,
+      "screenshotChild",
+      ws
+    );
+
+    console.log(
+      "SCREENSHOT CHILD CONNECTED:",
+      familyId
+    );
+
+    /*
+     * Tell the existing screen parent
+     * that the screenshot fallback is available.
+     */
+    if (isOpen(room.screenParent)) {
+      sendJson(
+        room.screenParent,
+        {
+          type: "screenshot_ready",
+        },
+        "SCREENSHOT FALLBACK READY"
+      );
+    }
+  }
+
+  /*
+   * Unknown role.
+   */
+  else {
     console.log(
       "Unknown role:",
       role
@@ -383,6 +481,9 @@ else if (role === "parent") {
         return;
       }
 
+      /*
+       * Existing microphone audio.
+       */
       if (role === "parent") {
         sendBinary(
           room.child,
@@ -406,6 +507,9 @@ else if (role === "parent") {
         return;
       }
 
+      /*
+       * Existing camera WebRTC signaling.
+       */
       if (role === "camera_parent") {
         sendText(
           room.cameraChild,
@@ -417,10 +521,42 @@ else if (role === "parent") {
       }
 
       /*
-       * New screen WebRTC signaling.
+       * NEW:
        *
-       * No screen video bytes pass through Render.
-       * Only JSON offer/answer/ICE messages pass here.
+       * Accessibility screenshot fallback.
+       *
+       * The child sends JPEG bytes as a
+       * binary WebSocket message.
+       *
+       * The server forwards those exact
+       * bytes to the existing screen parent.
+       */
+      if (role === "screenshot_child") {
+        if (!isBinary) {
+          console.log(
+            "Ignoring non-binary screenshot message"
+          );
+
+          return;
+        }
+
+        sendBinary(
+          room.screenParent,
+          message,
+          "FORWARD SCREENSHOT child -> parent"
+        );
+
+        return;
+      }
+
+      /*
+       * Existing screen WebRTC signaling.
+       *
+       * No screen video bytes pass through
+       * Render.
+       *
+       * Only JSON offer/answer/ICE messages
+       * pass here.
        */
       if (role === "screen_child") {
         if (isBinary) {
@@ -440,55 +576,66 @@ else if (role === "parent") {
         return;
       }
 
-     if (role === "screen_parent") {
-  if (isBinary) {
-    console.log(
-      "Unexpected screen parent binary message"
-    );
+      /*
+       * Existing screen WebRTC parent.
+       */
+      if (role === "screen_parent") {
+        if (isBinary) {
+          console.log(
+            "Unexpected screen parent binary message"
+          );
 
-    return;
-  }
+          return;
+        }
 
-  const text = message.toString();
+        const text =
+          message.toString();
 
-  try {
-    const json = JSON.parse(text);
+        try {
+          const json =
+            JSON.parse(text);
 
-    /*
-     * The server already sends viewer_ready when
-     * screen_parent connects. Ignore duplicate
-     * requests from older parent app versions.
-     */
-    if (json.type === "viewer_ready") {
-      console.log(
-        "IGNORED DUPLICATE SCREEN VIEWER READY"
-      );
+          /*
+           * The server already sends
+           * viewer_ready when screen_parent
+           * connects.
+           *
+           * Ignore duplicate requests from
+           * older parent app versions.
+           */
+          if (
+            json.type ===
+            "viewer_ready"
+          ) {
+            console.log(
+              "IGNORED DUPLICATE SCREEN VIEWER READY"
+            );
 
-      return;
-    }
-  } catch (error) {
-    console.log(
-      "Invalid screen parent JSON:",
-      error.message
-    );
+            return;
+          }
+        } catch (error) {
+          console.log(
+            "Invalid screen parent JSON:",
+            error.message
+          );
 
-    return;
-  }
+          return;
+        }
 
-  sendText(
-    room.screenChild,
-    text,
-    "FORWARD SCREEN SIGNAL parent -> child"
-  );
+        sendText(
+          room.screenChild,
+          text,
+          "FORWARD SCREEN SIGNAL parent -> child"
+        );
 
-  return;
-}
+        return;
+      }
     }
   );
 
   ws.on(
     "close",
-   async (code, reason) => {
+    async (code, reason) => {
       console.log(
         `${role} disconnected : ${familyId}`,
         "code:",
@@ -497,37 +644,54 @@ else if (role === "parent") {
         reason.toString()
       );
 
-    if (room.child === ws) {
-  room.child = null;
+      /*
+       * Existing child connection.
+       */
+      if (room.child === ws) {
+        room.child = null;
 
-  const parentUid =
-    await getParentUid(familyId);
+        const parentUid =
+          await getParentUid(
+            familyId
+          );
 
-  if (parentUid) {
-    await sendNotification(
-      parentUid,
-      "Child Offline",
-      "Your child's device has gone offline.",
-      {
-        type: "child_offline",
-        familyId: familyId,
+        if (parentUid) {
+          await sendNotification(
+            parentUid,
+            "Child Offline",
+            "Your child's device has gone offline.",
+            {
+              type: "child_offline",
+              familyId: familyId,
+            }
+          );
+        }
       }
-    );
-  }
-}
 
+      /*
+       * Existing parent connection.
+       */
       if (room.parent === ws) {
         room.parent = null;
       }
 
+      /*
+       * Existing camera child.
+       */
       if (room.cameraChild === ws) {
         room.cameraChild = null;
       }
 
+      /*
+       * Existing camera parent.
+       */
       if (room.cameraParent === ws) {
         room.cameraParent = null;
       }
 
+      /*
+       * Existing screen parent.
+       */
       if (room.screenParent === ws) {
         room.screenParent = null;
 
@@ -540,6 +704,9 @@ else if (role === "parent") {
         );
       }
 
+      /*
+       * Existing screen WebRTC child.
+       */
       if (room.screenChild === ws) {
         room.screenChild = null;
 
@@ -552,8 +719,29 @@ else if (role === "parent") {
         );
       }
 
+      /*
+       * NEW:
+       *
+       * Accessibility screenshot child
+       * disconnected.
+       */
+      if (room.screenshotChild === ws) {
+        room.screenshotChild = null;
+
+        console.log(
+          "SCREENSHOT CHILD DISCONNECTED:",
+          familyId
+        );
+      }
+
+      /*
+       * Remove room only when every
+       * connection is gone.
+       */
       if (roomIsEmpty(room)) {
-        families.delete(familyId);
+        families.delete(
+          familyId
+        );
 
         console.log(
           "Room removed:",
@@ -563,21 +751,29 @@ else if (role === "parent") {
     }
   );
 
-  ws.on("error", (error) => {
-    console.log(
-      `${role} socket error:`,
-      error.message
-    );
-  });
+  ws.on(
+    "error",
+    (error) => {
+      console.log(
+        `${role} socket error:`,
+        error.message
+      );
+    }
+  );
 });
 
 const heartbeatInterval =
   setInterval(() => {
-    wss.clients.forEach((ws) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.ping();
+    wss.clients.forEach(
+      (ws) => {
+        if (
+          ws.readyState ===
+          WebSocket.OPEN
+        ) {
+          ws.ping();
+        }
       }
-    });
+    );
   }, 30000);
 
 wss.on("close", () => {
@@ -589,12 +785,15 @@ wss.on("close", () => {
 const PORT =
   process.env.PORT || 3000;
 
-server.listen(PORT, () => {
-  console.log(
-    "Server Running on " + PORT
-  );
-});
-
+server.listen(
+  PORT,
+  () => {
+    console.log(
+      "Server Running on " +
+        PORT
+    );
+  }
+);
 
 async function sendNotification(
   parentUid,
@@ -603,10 +802,11 @@ async function sendNotification(
   data = {}
 ) {
   try {
-    const userDoc = await db
-      .collection("users")
-      .doc(parentUid)
-      .get();
+    const userDoc =
+      await db
+        .collection("users")
+        .doc(parentUid)
+        .get();
 
     if (!userDoc.exists) {
       console.log(
@@ -617,9 +817,11 @@ async function sendNotification(
       return false;
     }
 
-    const userData = userDoc.data();
+    const userData =
+      userDoc.data();
 
-    const token = userData.fcmToken;
+    const token =
+      userData.fcmToken;
 
     if (!token) {
       console.log(
@@ -642,7 +844,9 @@ async function sendNotification(
     };
 
     const response =
-      await getMessaging().send(message);
+      await getMessaging().send(
+        message
+      );
 
     console.log(
       "Notification sent:",
@@ -669,7 +873,9 @@ app.get(
     if (!parentUid) {
       return res
         .status(400)
-        .send("parentUid is required");
+        .send(
+          "parentUid is required"
+        );
     }
 
     const success =
@@ -696,47 +902,59 @@ app.get(
   }
 );
 
+app.get(
+  "/test-notification",
+  async (req, res) => {
+    try {
+      const token =
+        req.query.token;
 
+      if (!token) {
+        return res
+          .status(400)
+          .send(
+            "FCM token is required"
+          );
+      }
 
-  app.get("/test-notification", async (req, res) => {
-  try {
-    const token = req.query.token;
+      const message = {
+        token: token,
 
-    if (!token) {
-      return res.status(400).send("FCM token is required");
+        notification: {
+          title:
+            "Parent Controller",
+          body:
+            "FCM test notification working!",
+        },
+
+        data: {
+          type: "test",
+        },
+      };
+
+      const response =
+        await getMessaging().send(
+          message
+        );
+
+      console.log(
+        "FCM notification sent:",
+        response
+      );
+
+      res.send(
+        "Notification sent successfully"
+      );
+    } catch (error) {
+      console.error(
+        "FCM notification failed:",
+        error
+      );
+
+      res.status(500).send(
+        "Notification failed: " +
+          error.message
+      );
     }
-
-    const message = {
-      token: token,
-
-      notification: {
-        title: "Parent Controller",
-        body: "FCM test notification working!",
-      },
-
-      data: {
-        type: "test",
-      },
-    };
-
-    const response =
-      await getMessaging().send(message);
-
-    console.log(
-      "FCM notification sent:",
-      response
-    );
-
-    res.send("Notification sent successfully");
-  } catch (error) {
-    console.error(
-      "FCM notification failed:",
-      error
-    );
-
-    res.status(500).send(
-      "Notification failed: " +
-      error.message
-    );
   }
-});
+);
