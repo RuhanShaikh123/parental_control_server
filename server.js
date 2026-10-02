@@ -402,7 +402,7 @@ wss.on("connection", (ws, req) => {
      * service is already connected, tell
      * the parent that fallback is available.
      */
- if (isOpen(room.screenshotChild)) {
+   if (isOpen(room.screenshotChild)) {
   sendJson(
     room.screenParent,
     {
@@ -419,6 +419,7 @@ wss.on("connection", (ws, req) => {
     "NOTIFY SCREENSHOT CHILD: PARENT CONNECTED"
   );
 }
+  }
 
   /*
    * NEW:
@@ -444,7 +445,7 @@ wss.on("connection", (ws, req) => {
      * Tell the existing screen parent
      * that the screenshot fallback is available.
      */
-    if (isOpen(room.screenParent)) {
+   if (isOpen(room.screenParent)) {
   sendJson(
     room.screenParent,
     {
