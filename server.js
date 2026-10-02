@@ -402,16 +402,23 @@ wss.on("connection", (ws, req) => {
      * service is already connected, tell
      * the parent that fallback is available.
      */
-    if (isOpen(room.screenshotChild)) {
-      sendJson(
-        room.screenParent,
-        {
-          type: "screenshot_ready",
-        },
-        "SCREENSHOT FALLBACK READY"
-      );
-    }
-  }
+ if (isOpen(room.screenshotChild)) {
+  sendJson(
+    room.screenParent,
+    {
+      type: "screenshot_ready",
+    },
+    "SCREENSHOT FALLBACK READY"
+  );
+
+  sendJson(
+    room.screenshotChild,
+    {
+      type: "parent_connected",
+    },
+    "NOTIFY SCREENSHOT CHILD: PARENT CONNECTED"
+  );
+}
 
   /*
    * NEW:
@@ -438,14 +445,22 @@ wss.on("connection", (ws, req) => {
      * that the screenshot fallback is available.
      */
     if (isOpen(room.screenParent)) {
-      sendJson(
-        room.screenParent,
-        {
-          type: "screenshot_ready",
-        },
-        "SCREENSHOT FALLBACK READY"
-      );
-    }
+  sendJson(
+    room.screenParent,
+    {
+      type: "screenshot_ready",
+    },
+    "SCREENSHOT FALLBACK READY"
+  );
+
+  sendJson(
+    room.screenshotChild,
+    {
+      type: "parent_connected",
+    },
+    "NOTIFY SCREENSHOT CHILD: PARENT ALREADY WATCHING"
+  );
+}
   }
 
   /*
@@ -692,17 +707,25 @@ wss.on("connection", (ws, req) => {
       /*
        * Existing screen parent.
        */
-      if (room.screenParent === ws) {
-        room.screenParent = null;
+     if (room.screenParent === ws) {
+  room.screenParent = null;
 
-        sendJson(
-          room.screenChild,
-          {
-            type: "viewer_left",
-          },
-          "SCREEN VIEWER LEFT"
-        );
-      }
+  sendJson(
+    room.screenChild,
+    {
+      type: "viewer_left",
+    },
+    "SCREEN VIEWER LEFT"
+  );
+
+  sendJson(
+    room.screenshotChild,
+    {
+      type: "parent_disconnected",
+    },
+    "NOTIFY SCREENSHOT CHILD: PARENT DISCONNECTED"
+  );
+}
 
       /*
        * Existing screen WebRTC child.
